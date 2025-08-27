@@ -1,43 +1,64 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { execa } from 'execa';
-import fg from 'fast-glob';
-import * as Diff from 'diff';
+import crypto from 'crypto';
 
 function ensureInWorkspace(workspace, targetPath) {
   const resolved = path.resolve(workspace, targetPath);
-  if (!resolved.startsWith(workspace)) {
+  if (!resolved.startsWith(path.resolve(workspace))) {
     throw new Error(`Path ${targetPath} is outside workspace`);
   }
   return resolved;
 }
 
 export async function searchFiles(query, globs = ['**/*'], maxResults = 20, { workspace }) {
-  const files = await fg(globs, { cwd: workspace, dot: true });
-  if (files.length === 0) return '';
+  const args = ['-n', '-S', '--hidden'];
+  for (const g of globs) {
+    args.push('--glob', g);
+  }
+  args.push(query, '.');
   try {
-    const { stdout } = await execa('rg', ['--max-count', String(maxResults), query, '--', ...files], { cwd: workspace });
-    return stdout;
+    const { stdout } = await execa('rg', args, { cwd: workspace });
+    const lines = stdout.trim().split('\n').filter(Boolean).slice(0, maxResults);
+    return lines.map(line => {
+      const m = line.match(/^(.*?):(\d+):(.*)$/);
+      return m ? { file: m[1], line: Number(m[2]), text: m[3] } : { file: '', line: 0, text: line };
+    });
   } catch (err) {
-    return err.stdout || '';
+    return { error: err.stderr || err.stdout || err.message };
   }
 }
 
 export async function readFile(filePath, { workspace, byteLimit }) {
   const abs = ensureInWorkspace(workspace, filePath);
   const data = await fs.readFile(abs);
-  return data.slice(0, byteLimit).toString();
+  const slice = data.slice(0, byteLimit);
+  const sha = crypto.createHash('sha256').update(slice).digest('hex');
+  return { content: slice.toString(), bytes: slice.length, sha256: sha };
 }
 
 export async function applyPatch(filePath, newContent, { workspace, approve, patchesDir }) {
   const abs = ensureInWorkspace(workspace, filePath);
-  const oldContent = await fs.readFile(abs, 'utf8').catch(() => '');
-  const diff = Diff.createPatch(filePath, oldContent, newContent);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const patchFile = path.join(patchesDir, `${timestamp}-${filePath.replace(/\//g, '_')}.patch`);
-  await fs.writeFile(patchFile, diff);
-  if (approve) {
-    await fs.writeFile(abs, newContent, 'utf8');
+  const before = await fs.readFile(abs).catch(() => Buffer.from(''));
+  const beforeHash = crypto.createHash('sha256').update(before).digest('hex');
+  const afterBuffer = Buffer.from(newContent);
+  const afterHash = crypto.createHash('sha256').update(afterBuffer).digest('hex');
+  await fs.mkdir(patchesDir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const artifact = path.join(patchesDir, `${ts}-${filePath.replace(/\//g, '_')}.full`);
+  await fs.writeFile(artifact, newContent, 'utf8');
+  if (!approve) {
+    return { wrote: false, mode: 'dry-run', beforeHash, afterHash, bytes: afterBuffer.length, artifact };
   }
-  return diff;
+  const tmp = `${abs}.tmp.${process.pid}`;
+  await fs.writeFile(tmp, newContent, 'utf8');
+  await fs.rename(tmp, abs);
+  console.log(`✏️  WROTE ${filePath} (${afterBuffer.length} bytes) sha256=${afterHash}`);
+  let status = '';
+  try {
+    const { stdout } = await execa('git', ['status', '--short', filePath], { cwd: workspace });
+    status = stdout.trim();
+    if (status) console.log(`🧾 git status: ${status}`);
+  } catch {}
+  return { wrote: true, beforeHash, afterHash, bytes: afterBuffer.length, artifact, status };
 }

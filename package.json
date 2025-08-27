@@ -1,0 +1,16 @@
+{
+  "name": "gemini-lead-software-engineer",
+  "version": "1.0.0",
+  "description": "AI engineer agent CLI",
+  "type": "module",
+  "scripts": {
+    "test": "node -e \"console.log('No tests')\""
+  },
+  "dependencies": {
+    "@google/genai": "^1.15.0",
+    "diff": "^8.0.2",
+    "execa": "^9.6.0",
+    "fast-glob": "^3.3.3",
+    "strip-ansi": "^7.1.0"
+  }
+}

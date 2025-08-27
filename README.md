@@ -20,3 +20,11 @@ node ai-engineer.mjs "Implement fix" --approve
 - Permission denied in WORKSPACE → adjust directory permissions
 
 Configuration for models and runners lives under `config/` and logs are written to `logs/sessions` and `logs/patches`.
+
+## Usage 
+
+```
+node ai-engineer.mjs "Diagnose failing login and propose a minimal patch"
+node ai-engineer.mjs "Implement the fix and run tests" --approve --auto-install --until-done
+```
+

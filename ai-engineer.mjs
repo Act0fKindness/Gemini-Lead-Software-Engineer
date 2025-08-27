@@ -114,41 +114,76 @@ const { GoogleGenAI } = genaiModule;
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 let model = defaults.model;
 
+// --- response normalizer: supports new + legacy shapes
+function normalizeResponse(resp) {
+  if (resp && (typeof resp.text === 'string' || Array.isArray(resp?.functionCalls))) {
+    return { text: resp.text ?? '', functionCalls: resp.functionCalls ?? [] };
+  }
+  const cand = resp?.response?.candidates?.[0];
+  const parts = cand?.content?.parts ?? [];
+  const text = parts.filter(p => typeof p?.text === 'string').map(p => p.text).join('\n');
+  const functionCalls = parts
+    .map(p => p?.functionCall)
+    .filter(Boolean)
+    .map(fc => ({ name: fc.name, args: fc.args || {} }));
+  return { text, functionCalls };
+}
+
+async function modelTurn({ history, tools }) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await ai.models.generateContent({
+        model,
+        contents: history,
+        tools,
+        toolConfig: { functionCallingConfig: { mode: 'AUTO' } }
+      });
+      const norm = normalizeResponse(resp);
+      if (!norm.text && (!norm.functionCalls || norm.functionCalls.length === 0)) {
+        lastErr = new Error('Empty model response; will retry');
+        continue;
+      }
+      return norm;
+    } catch (e) {
+      if (e.status === 404 && model !== 'gemini-2.5-flash') {
+        model = 'gemini-2.5-flash';
+        continue;
+      }
+      lastErr = e;
+      await new Promise(r => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastErr || new Error('Model did not return usable output');
+}
+
 const history = [
   { role: 'user', parts: [{ text: `You are an AI engineering assistant. Use provided tools to help with user requests.\n\nUser request: ${prompt}` }] }
 ];
 
 for (let i = 0; i < defaults.maxToolIters; i++) {
-  let response;
-  try {
-    response = await ai.models.generateContent({ model, contents: history, tools: toolDefs });
-  } catch (err) {
-    if (err.status === 404 && model !== 'gemini-2.5-flash') {
-      model = 'gemini-2.5-flash';
-      response = await ai.models.generateContent({ model, contents: history, tools: toolDefs });
-    } else {
-      throw err;
+  const resp = await modelTurn({ history, tools: toolDefs });
+
+  if (resp.functionCalls?.length) {
+    for (const fc of resp.functionCalls) {
+      await log({ role: 'model', functionCall: { name: fc.name, args: fc.args } });
+      const impl = toolImpls[fc.name];
+      if (!impl) {
+        history.push({ role: 'model', parts: [{ text: `Unknown tool ${fc.name}` }] });
+        continue;
+      }
+      const result = await impl(fc.args);
+      await log({ role: 'tool', name: fc.name, result: redact(JSON.stringify(result)) });
+      history.push({ role: 'model', parts: [{ functionCall: { name: fc.name, args: fc.args } }] });
+      history.push({ role: 'user', parts: [{ functionResponse: { name: fc.name, response: JSON.stringify(result) } }] });
     }
-  }
-  const parts = response.response.candidates[0].content.parts;
-  const functionCall = parts.find(p => p.functionCall);
-  if (functionCall) {
-    await log({ role: 'model', functionCall });
-    const impl = toolImpls[functionCall.functionCall.name];
-    if (!impl) {
-      history.push({ role: 'model', parts: [{ text: `Unknown tool ${functionCall.functionCall.name}` }] });
-      continue;
-    }
-    const args = JSON.parse(functionCall.functionCall.args || '{}');
-    const result = await impl(args);
-    await log({ role: 'tool', name: functionCall.functionCall.name, result: redact(JSON.stringify(result)) });
-    history.push({ role: 'model', parts: [ { functionCall: functionCall.functionCall } ] });
-    history.push({ role: 'user', parts: [ { functionResponse: { name: functionCall.functionCall.name, response: JSON.stringify(result) } } ] });
     continue;
-  } else {
-    const text = parts.map(p => p.text || '').join('\n');
-    await log({ role: 'model', text: redact(text) });
-    console.log(text);
-    break;
   }
+
+  const out = (resp.text ?? '').trim();
+  if (out) {
+    await log({ role: 'model', text: redact(out) });
+    console.log(out);
+  }
+  break;
 }

@@ -1,7 +1,7 @@
 {
-  "model": "gemini-2.5-pro",
-  "maxToolIters": 30,
   "workspace": "/var/www/html/Uni-Sign",
-  "writeGating": true,
-  "byteLimit": 120000
+  "model": "gemini-2.5-pro",
+  "byteLimit": 120000,
+  "maxToolIters": 100,
+  "writeGating": false
 }

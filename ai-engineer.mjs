@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'fs/promises';
 import path from 'path';
-import { GoogleGenerativeAI } from '@google/genai';
+import { execa } from 'execa';
 import { searchFiles, readFile, applyPatch } from './tools/files.mjs';
 import { runTests, runCmd } from './tools/cmd.mjs';
 import { gitMakeBranch, gitCommit, gitDiff } from './tools/git.mjs';
@@ -12,6 +12,7 @@ const defaults = JSON.parse(await fs.readFile(path.join(__dirname, 'config', 'de
 const runners = JSON.parse(await fs.readFile(path.join(__dirname, 'config', 'runners.json'), 'utf8'));
 const args = process.argv.slice(2);
 const approve = args.includes('--approve');
+const autoInstall = args.includes('--auto-install');
 const prompt = args.filter(a => !a.startsWith('--')).join(' ');
 const workspace = process.env.WORKSPACE || defaults.workspace;
 const byteLimit = defaults.byteLimit || 120000;
@@ -27,6 +28,47 @@ async function log(entry) {
 function redact(str) {
   return str.replace(/([A-Z_]*KEY|PASSWORD)=\S+/gi, '$1=[redacted]');
 }
+
+async function preflight({ autoInstall, workspace, approve }) {
+  const v = Number(process.versions.node.split('.')[0]);
+  if (v < 20) {
+    console.error(`Node ${process.versions.node} detected. Please use Node >= 20.`);
+    process.exit(1);
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    console.error('GEMINI_API_KEY is not set. export GEMINI_API_KEY=...');
+    process.exit(1);
+  }
+  let genaiModule;
+  try {
+    genaiModule = await import('@google/genai');
+  } catch {
+    if (autoInstall) {
+      console.log('Installing @google/genai locally...');
+      await execa('npm', ['i', '@google/genai'], { stdio: 'inherit' });
+      genaiModule = await import('@google/genai');
+    } else {
+      console.error('Missing @google/genai. Run: npm i @google/genai');
+      process.exit(1);
+    }
+  }
+  try {
+    await fs.access(workspace);
+  } catch {
+    console.error(`WORKSPACE ${workspace} is not accessible.`);
+    process.exit(1);
+  }
+  if (approve) {
+    try {
+      await fs.access(workspace, fs.constants.W_OK);
+    } catch {
+      console.warn(`WORKSPACE ${workspace} is not writable; --approve may fail.`);
+    }
+  }
+  return genaiModule;
+}
+
+const genaiModule = await preflight({ autoInstall, workspace, approve });
 
 async function detectRunner() {
   try { await fs.access(path.join(workspace, 'package.json')); return 'node'; } catch {}
@@ -68,8 +110,9 @@ const toolDefs = [
   { name: 'run_cmd', description: 'Run shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }
 ];
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-let model = genAI.getGenerativeModel({ model: defaults.model });
+const { GoogleGenAI } = genaiModule;
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let model = defaults.model;
 
 const history = [
   { role: 'user', parts: [{ text: `You are an AI engineering assistant. Use provided tools to help with user requests.\n\nUser request: ${prompt}` }] }
@@ -78,11 +121,11 @@ const history = [
 for (let i = 0; i < defaults.maxToolIters; i++) {
   let response;
   try {
-    response = await model.generateContent({ contents: history, tools: toolDefs });
+    response = await ai.models.generateContent({ model, contents: history, tools: toolDefs });
   } catch (err) {
-    if (err.status === 404 && defaults.model !== 'gemini-2.5-flash') {
-      model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      response = await model.generateContent({ contents: history, tools: toolDefs });
+    if (err.status === 404 && model !== 'gemini-2.5-flash') {
+      model = 'gemini-2.5-flash';
+      response = await ai.models.generateContent({ model, contents: history, tools: toolDefs });
     } else {
       throw err;
     }

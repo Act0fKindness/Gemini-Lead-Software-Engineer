@@ -4,7 +4,10 @@
   "description": "AI engineer agent CLI",
   "type": "module",
   "scripts": {
-    "test": "node -e \"console.log('No tests')\""
+    "test": "node -e \"console.log('No tests')\"",
+    "setup": "bash bin/setup.sh",
+    "smoke": "node gemini-smoke.mjs",
+    "start": "node ai-engineer.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.15.0",

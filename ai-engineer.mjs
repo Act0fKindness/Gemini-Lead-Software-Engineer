@@ -89,8 +89,7 @@ const testCommand = runners[runner]?.test || runners.fallback.test;
 // --- tools (impls)
 const toolImpls = {
   search_files: async ({ query, globs = ['**/*'], max_results = 20 }) => {
-    const res = await searchFiles(query, globs, max_results, { workspace });
-    return res;
+    return await searchFiles(query, globs, max_results, { workspace });
   },
   read_file: async ({ filepath, max_bytes = byteLimit }) => {
     return await readFile(filepath, { workspace, byteLimit: max_bytes });
@@ -214,7 +213,6 @@ async function executeToolLoop() {
         history.push({ role: 'model', parts: [{ functionCall: { name: fc.name, args: fc.args || {} } }] });
         history.push({ role: 'user',  parts: [{ functionResponse: { name: fc.name, response: result } }] });
       }
-      // continue loop to let the model consume tool outputs
       continue;
     }
 

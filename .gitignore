@@ -1,0 +1,5 @@
+node_modules
+logs/sessions/*
+!logs/sessions/.gitkeep
+logs/patches/*
+!logs/patches/.gitkeep

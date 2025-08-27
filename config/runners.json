@@ -1,1 +1,6 @@
-{ "fallback": { "test": "bash -lc 'true'" } }
+{
+  "php":   { "test": "vendor/bin/phpunit --colors=never", "lint": "php -l $(git ls-files '*.php')" },
+  "node":  { "test": "npm test --silent", "lint": "npm run -s lint || true", "build": "npm run -s build || true" },
+  "python":{ "test": "pytest -q", "lint": "ruff check . || true" },
+  "fallback": { "test": "true" }
+}
